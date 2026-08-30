@@ -12,6 +12,14 @@ go run .
 
 The app opens a local dashboard with a QR code. Scan it with an Android phone connected to the same Wi-Fi network. If the browser does not open automatically, use the dashboard URL printed in the terminal. Files are shared through `~/Downloads/Up` by default.
 
+## Send from computer to phone
+
+1. On the Mac dashboard, click **Open shared folder**.
+2. Copy the files you want to send into that folder.
+3. On the phone, open **Shared files** and tap the download arrow.
+
+Refresh the phone page after adding new files. Files uploaded from the phone also appear in this folder.
+
 Use another folder or port when needed:
 
 ```sh
@@ -32,4 +40,16 @@ For Windows, build on Windows or cross-compile from macOS:
 GOOS=windows GOARCH=amd64 go build -o up.exe .
 ```
 
-Traffic is not encrypted. Use a trusted network and stop the app with `Ctrl+C` when finished.
+## Install on macOS
+
+An installable disk image is available at `build/Up.dmg`. Open it and drag **Up** into **Applications**.
+
+To rebuild the app and disk image:
+
+```sh
+./package-macos.sh
+```
+
+The local package is ad-hoc signed. If macOS blocks the first launch, Control-click **Up** in Applications, choose **Open**, then confirm. Public distribution without this prompt requires an Apple Developer ID certificate and notarization.
+
+Traffic is not encrypted. Use a trusted network and stop the command-line app with `Ctrl+C`, or use **Quit Up** on the dashboard.

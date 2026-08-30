@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -31,6 +32,8 @@ type app struct {
 	token    string
 	phoneURL string
 	qrCode   []byte
+	quit     chan struct{}
+	quitOnce sync.Once
 }
 
 type fileInfo struct {
@@ -45,7 +48,7 @@ func main() {
 		log.Fatal(err)
 	}
 	dir := flag.String("dir", defaultDir, "folder used for uploads and downloads")
-	port := flag.Int("port", 8080, "TCP port (0 chooses an available port)")
+	port := flag.Int("port", 0, "TCP port (0 chooses an available port)")
 	flag.Parse()
 
 	absDir, err := filepath.Abs(*dir)
@@ -69,7 +72,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create QR code: %v", err)
 	}
-	application := &app{dir: absDir, token: token, phoneURL: phoneURL, qrCode: qrCode}
+	application := &app{dir: absDir, token: token, phoneURL: phoneURL, qrCode: qrCode, quit: make(chan struct{})}
 	server := &http.Server{Handler: application.routes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 	dashboardURL := fmt.Sprintf("http://localhost:%d/", actualPort)
 	log.Printf("Sharing %s", absDir)
@@ -79,8 +82,15 @@ func main() {
 	if err := openBrowser(dashboardURL); err != nil {
 		log.Printf("Could not open browser: %v", err)
 	}
-	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.Serve(listener) }()
+	select {
+	case <-application.quit:
+		_ = server.Close()
+	case err := <-serveErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -89,6 +99,8 @@ func (a *app) routes() http.Handler {
 	base := "/" + a.token
 	mux.HandleFunc("GET /{$}", a.dashboard)
 	mux.HandleFunc("GET /qr.png", a.qrImage)
+	mux.HandleFunc("POST /open-folder", a.openFolder)
+	mux.HandleFunc("POST /quit", a.quitApp)
 	mux.HandleFunc("GET "+base+"/api/files", a.listFiles)
 	mux.HandleFunc("POST "+base+"/api/upload", a.uploadFiles)
 	mux.HandleFunc("GET "+base+"/files/{name}", a.downloadFile)
@@ -115,6 +127,27 @@ func (a *app) qrImage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/png")
 	_, _ = w.Write(a.qrCode)
+}
+
+func (a *app) openFolder(w http.ResponseWriter, r *http.Request) {
+	if !requestIsLocal(r) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := openPath(a.dir); err != nil {
+		http.Error(w, "Could not open shared folder", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) quitApp(w http.ResponseWriter, r *http.Request) {
+	if !requestIsLocal(r) {
+		http.NotFound(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	a.quitOnce.Do(func() { close(a.quit) })
 }
 
 func (a *app) index(w http.ResponseWriter, _ *http.Request) {
@@ -284,14 +317,18 @@ func requestIsLocal(r *http.Request) bool {
 }
 
 func openBrowser(url string) error {
+	return openPath(url)
+}
+
+func openPath(path string) error {
 	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.Command("open", url)
+		command = exec.Command("open", path)
 	case "windows":
-		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
 	default:
-		command = exec.Command("xdg-open", url)
+		command = exec.Command("xdg-open", path)
 	}
 	return command.Start()
 }
@@ -308,8 +345,8 @@ func securityHeaders(next http.Handler) http.Handler {
 
 var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Up - Connect phone</title>
-<style>:root{--ink:#17211d;--paper:#f4f1e8;--green:#0f715b;--line:#c9c7ba}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;color:var(--ink);background:repeating-linear-gradient(0deg,transparent 0 31px,rgba(23,33,29,.04) 31px 32px),var(--paper);font-family:Georgia,'Times New Roman',serif}main{width:min(520px,calc(100% - 32px));padding:40px 0;text-align:center}h1{margin:0 0 10px;font-size:64px;font-weight:500;letter-spacing:0}p{margin:0 0 24px;font-size:20px;line-height:1.4}.qr{display:block;width:min(384px,100%);margin:auto;border:1px solid var(--line)}.url{margin-top:20px;overflow-wrap:anywhere;color:var(--green);font:13px/1.5 ui-monospace,monospace}</style></head>
-<body><main><h1>Up</h1><p>Scan with your Android camera to connect.</p><img class="qr" src="/qr.png" alt="QR code for the phone transfer page"><div class="url">{{.}}</div></main></body></html>`))
+<style>:root{--ink:#17211d;--paper:#f4f1e8;--green:#0f715b;--red:#b53c29;--line:#c9c7ba}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;color:var(--ink);background:repeating-linear-gradient(0deg,transparent 0 31px,rgba(23,33,29,.04) 31px 32px),var(--paper);font-family:Georgia,'Times New Roman',serif}main{width:min(520px,calc(100% - 32px));padding:40px 0;text-align:center}h1{margin:0 0 10px;font-size:64px;font-weight:500;letter-spacing:0}p{margin:0 0 24px;font-size:20px;line-height:1.4}.qr{display:block;width:min(384px,100%);margin:auto;border:1px solid var(--line)}.url{margin-top:20px;overflow-wrap:anywhere;color:var(--green);font:13px/1.5 ui-monospace,monospace}.actions{display:flex;gap:10px;margin-top:24px}.actions button{flex:1;min-height:48px;border:0;border-radius:3px;background:var(--green);color:white;font:700 13px ui-monospace,monospace;cursor:pointer}.actions .quit{background:transparent;border:1px solid var(--line);color:var(--red)}</style></head>
+<body><main><h1>Up</h1><p>Scan with your Android camera to connect.</p><img class="qr" src="/qr.png" alt="QR code for the phone transfer page"><div class="url">{{.}}</div><div class="actions"><button id="folder">Open shared folder</button><button class="quit" id="quit">Quit Up</button></div></main><script>document.querySelector('#folder').onclick=()=>fetch('/open-folder',{method:'POST'});document.querySelector('#quit').onclick=async()=>{await fetch('/quit',{method:'POST'});document.body.innerHTML='<main><h1>Up</h1><p>Up has stopped. You can close this tab.</p></main>'}</script></body></html>`))
 
 const indexHTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f4f1e8"><title>Up - Local file transfer</title>

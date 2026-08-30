@@ -239,7 +239,8 @@ func TestLocalControlRejectsCrossOriginRequest(t *testing.T) {
 
 func TestLocalControlAllowsMatchingHTTPOrigin(t *testing.T) {
 	application := testApp(t)
-	req := request(http.MethodGet, "http://localhost:54321/api/devices", "127.0.0.1:1234")
+	req := request(http.MethodGet, "/api/devices", "127.0.0.1:1234")
+	req.Host = "localhost:54321"
 	req.Header.Set("Origin", "http://localhost:54321")
 	recorder := httptest.NewRecorder()
 	application.routes().ServeHTTP(recorder, req)

@@ -681,7 +681,11 @@ func sameOrigin(r *http.Request) bool {
 		return true
 	}
 	parsed, err := url.Parse(origin)
-	return err == nil && parsed.Scheme == r.URL.Scheme && parsed.Host == r.Host
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return err == nil && parsed.Scheme == scheme && parsed.Host == r.Host
 }
 
 func privateNetworkOnly(next http.Handler) http.Handler {

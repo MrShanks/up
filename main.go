@@ -44,7 +44,6 @@ type app struct {
 	phoneURL      string
 	qrCode        []byte
 	allowDelete   bool
-	devicesFile   string
 	pairingToken  string
 	pairingExpiry time.Time
 	devices       map[string]pairedDevice
@@ -81,36 +80,6 @@ type dashboardData struct {
 	Devices     []deviceView
 }
 
-func loadDevices(path string) (map[string]pairedDevice, error) {
-	devices := make(map[string]pairedDevice)
-	contents, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return devices, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(contents, &devices); err != nil {
-		return nil, err
-	}
-	return devices, nil
-}
-
-func (a *app) saveDevicesLocked() error {
-	if a.devicesFile == "" {
-		return nil
-	}
-	contents, err := json.MarshalIndent(a.devices, "", "  ")
-	if err != nil {
-		return err
-	}
-	temporary := a.devicesFile + ".tmp"
-	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, a.devicesFile)
-}
-
 func (a *app) currentPhoneURL() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -144,9 +113,8 @@ func (a *app) addDevice(r *http.Request) (pairedDevice, error) {
 	device := pairedDevice{ID: id, Token: token, Name: deviceName(r.UserAgent()), Address: requestIP(r).String(), PairedAt: now, LastSeen: now}
 	a.mu.Lock()
 	a.devices[id] = device
-	err = a.saveDevicesLocked()
 	a.mu.Unlock()
-	return device, err
+	return device, nil
 }
 
 func (a *app) authorizeDevice(token string) bool {
@@ -224,9 +192,8 @@ func main() {
 		log.Fatalf("prepare HTTPS certificate: %v", err)
 	}
 	devicesFile := filepath.Join(*configDir, "devices.json")
-	devices, err := loadDevices(devicesFile)
-	if err != nil {
-		log.Fatalf("load paired devices: %v", err)
+	if err := os.Remove(devicesFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Fatalf("clear paired devices: %v", err)
 	}
 	pairingToken, err := newToken()
 	if err != nil {
@@ -247,10 +214,9 @@ func main() {
 	application := &app{
 		dir:           absDir,
 		allowDelete:   *allowDelete,
-		devicesFile:   devicesFile,
 		pairingToken:  pairingToken,
 		pairingExpiry: time.Now().Add(pairingLifetime),
-		devices:       devices,
+		devices:       make(map[string]pairedDevice),
 		quit:          make(chan struct{}),
 	}
 	application.setPhoneURL(fmt.Sprintf("https://%s:%d/pair/%s", localIP(), actualPort, pairingToken))
@@ -420,24 +386,14 @@ func (a *app) revokeDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	a.devices = make(map[string]pairedDevice)
-	err := a.saveDevicesLocked()
 	a.mu.Unlock()
-	if err != nil {
-		http.Error(w, "Could not revoke devices", http.StatusInternalServerError)
-		return
-	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *app) revokeDevice(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	delete(a.devices, r.PathValue("id"))
-	err := a.saveDevicesLocked()
 	a.mu.Unlock()
-	if err != nil {
-		http.Error(w, "Could not revoke device", http.StatusInternalServerError)
-		return
-	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

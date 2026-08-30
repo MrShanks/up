@@ -12,7 +12,7 @@ go run .
 
 The app opens a local dashboard with a one-time QR pairing code. Scan it with an Android phone connected to the same trusted Wi-Fi network. The code expires after 10 minutes and cannot be reused. Files are shared through `~/Downloads/Up` by default.
 
-The computer dashboard runs over HTTP on localhost, where traffic never leaves the computer and no TLS warning is needed. Phone transfers use a private HTTPS certificate created on first launch. The phone browser will warn that it is not issued by a public certificate authority; verify that the address is your computer's private LAN address before accepting it. Pairing redirects the phone to a persistent, revocable device link that remains valid across app restarts. Treat that link like a password and do not share it.
+The computer dashboard runs over HTTP on localhost, where traffic never leaves the computer and no TLS warning is needed. Phone transfers use a private HTTPS certificate created on first launch. The phone browser will warn that it is not issued by a public certificate authority; verify that the address is your computer's private LAN address before accepting it. Pairing redirects the phone to a revocable device link that remains valid until Up quits. Treat that link like a password and do not share it.
 
 ## Send from computer to phone
 
@@ -30,7 +30,7 @@ go run . -dir "/path/to/folder" -port 8080
 
 The browser interface can upload files to the computer and download shared files. Duplicate uploads are renamed instead of overwritten, and uploads are limited to 10 GB per request. Phone-side deletion is disabled by default; enable it explicitly with `-allow-delete`.
 
-The dashboard lists currently connected devices. A device disappears shortly after its page closes and reappears when reopened. Its pairing remains valid until you remove it with **×** or use **Remove all**.
+The dashboard lists currently connected devices. A device disappears shortly after its page closes and reappears when reopened. Its pairing remains valid until you remove it, use **Remove all**, or quit Up. Every new app launch requires pairing again.
 
 ## Build
 

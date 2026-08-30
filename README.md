@@ -18,7 +18,7 @@ Up creates a private HTTPS certificate on first launch. Your browser will warn t
 
 1. On the Mac dashboard, click **Open shared folder**.
 2. Copy the files you want to send into that folder.
-3. On the phone, open **Shared files** and tap the download arrow.
+3. On the phone, open **Files** and tap the download arrow.
 
 Refresh the phone page after adding new files. Files uploaded from the phone also appear in this folder.
 
@@ -30,7 +30,7 @@ go run . -dir "/path/to/folder" -port 8080
 
 The browser interface can upload files to the computer and download shared files. Duplicate uploads are renamed instead of overwritten, and uploads are limited to 10 GB per request. Phone-side deletion is disabled by default; enable it explicitly with `-allow-delete`.
 
-Use **New pairing code** to pair another phone. Use **Forget paired phones** to invalidate every existing phone session immediately.
+The dashboard lists every paired device with its address and last activity. Remove one device with its **×** button, use **New code** to pair another phone, or use **Remove all** to invalidate every device.
 
 ## Build
 

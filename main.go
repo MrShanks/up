@@ -43,10 +43,10 @@ type app struct {
 	phoneURL      string
 	qrCode        []byte
 	allowDelete   bool
-	sessionFile   string
+	devicesFile   string
 	pairingToken  string
 	pairingExpiry time.Time
-	sessionToken  string
+	devices       map[string]pairedDevice
 	quit          chan struct{}
 	quitOnce      sync.Once
 	mu            sync.RWMutex
@@ -58,9 +58,136 @@ type fileInfo struct {
 	Modified time.Time `json:"modified"`
 }
 
+type pairedDevice struct {
+	ID       string    `json:"id"`
+	Token    string    `json:"token"`
+	Name     string    `json:"name"`
+	Address  string    `json:"address"`
+	PairedAt time.Time `json:"pairedAt"`
+	LastSeen time.Time `json:"lastSeen"`
+}
+
+type deviceView struct {
+	ID       string
+	Name     string
+	Address  string
+	LastSeen string
+}
+
 type dashboardData struct {
 	PhoneURL    string
 	AllowDelete bool
+	Devices     []deviceView
+}
+
+func loadDevices(path string) (map[string]pairedDevice, error) {
+	devices := make(map[string]pairedDevice)
+	contents, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return devices, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(contents, &devices); err != nil {
+		return nil, err
+	}
+	return devices, nil
+}
+
+func (a *app) saveDevicesLocked() error {
+	if a.devicesFile == "" {
+		return nil
+	}
+	contents, err := json.MarshalIndent(a.devices, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary := a.devicesFile + ".tmp"
+	if err := os.WriteFile(temporary, contents, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, a.devicesFile)
+}
+
+func (a *app) currentPhoneURL() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.phoneURL
+}
+
+func (a *app) deviceViews() []deviceView {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	views := make([]deviceView, 0, len(a.devices))
+	for _, device := range a.devices {
+		views = append(views, deviceView{ID: device.ID, Name: device.Name, Address: device.Address, LastSeen: relativeTime(device.LastSeen)})
+	}
+	sort.Slice(views, func(i, j int) bool { return a.devices[views[i].ID].LastSeen.After(a.devices[views[j].ID].LastSeen) })
+	return views
+}
+
+func (a *app) addDevice(r *http.Request) (pairedDevice, error) {
+	id, err := newToken()
+	if err != nil {
+		return pairedDevice{}, err
+	}
+	token, err := newToken()
+	if err != nil {
+		return pairedDevice{}, err
+	}
+	now := time.Now()
+	device := pairedDevice{ID: id, Token: token, Name: deviceName(r.UserAgent()), Address: requestIP(r).String(), PairedAt: now, LastSeen: now}
+	a.mu.Lock()
+	a.devices[id] = device
+	err = a.saveDevicesLocked()
+	a.mu.Unlock()
+	return device, err
+}
+
+func (a *app) authorizeDevice(token string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, device := range a.devices {
+		if secureEqual(token, device.Token) {
+			device.LastSeen = time.Now()
+			a.devices[id] = device
+			return true
+		}
+	}
+	return false
+}
+
+func deviceName(userAgent string) string {
+	lower := strings.ToLower(userAgent)
+	switch {
+	case strings.Contains(lower, "android") && strings.Contains(lower, "chrome"):
+		return "Android · Chrome"
+	case strings.Contains(lower, "android"):
+		return "Android"
+	case strings.Contains(lower, "iphone") || strings.Contains(lower, "ipad"):
+		return "iPhone / iPad"
+	case strings.Contains(lower, "firefox"):
+		return "Firefox"
+	case strings.Contains(lower, "chrome"):
+		return "Chrome"
+	default:
+		return "Mobile device"
+	}
+}
+
+func relativeTime(value time.Time) string {
+	age := time.Since(value)
+	switch {
+	case age < time.Minute:
+		return "now"
+	case age < time.Hour:
+		return fmt.Sprintf("%dm", int(age.Minutes()))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(age.Hours()))
+	default:
+		return value.Format("Jan 2")
+	}
 }
 
 func main() {
@@ -92,10 +219,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("prepare HTTPS certificate: %v", err)
 	}
-	sessionFile := filepath.Join(*configDir, "device-session")
-	sessionToken, err := loadOrCreateSecret(sessionFile)
+	devicesFile := filepath.Join(*configDir, "devices.json")
+	devices, err := loadDevices(devicesFile)
 	if err != nil {
-		log.Fatalf("prepare device session: %v", err)
+		log.Fatalf("load paired devices: %v", err)
 	}
 	pairingToken, err := newToken()
 	if err != nil {
@@ -110,10 +237,10 @@ func main() {
 	application := &app{
 		dir:           absDir,
 		allowDelete:   *allowDelete,
-		sessionFile:   sessionFile,
+		devicesFile:   devicesFile,
 		pairingToken:  pairingToken,
 		pairingExpiry: time.Now().Add(pairingLifetime),
-		sessionToken:  sessionToken,
+		devices:       devices,
 		quit:          make(chan struct{}),
 	}
 	application.setPhoneURL(fmt.Sprintf("https://%s:%d/pair/%s", localIP(), actualPort, pairingToken))
@@ -149,6 +276,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /open-folder", a.localControl(a.openFolder))
 	mux.HandleFunc("POST /rotate", a.localControl(a.rotatePairing))
 	mux.HandleFunc("POST /revoke", a.localControl(a.revokeDevices))
+	mux.HandleFunc("DELETE /devices/{id}", a.localControl(a.revokeDevice))
 	mux.HandleFunc("POST /quit", a.localControl(a.quitApp))
 	mux.HandleFunc("GET /pair/{token}", a.pairDevice)
 	mux.HandleFunc("GET /device/{session}/{$}", a.requireDevice(a.index))
@@ -176,11 +304,9 @@ func (a *app) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	a.mu.RLock()
-	data := dashboardData{PhoneURL: a.phoneURL, AllowDelete: a.allowDelete}
-	a.mu.RUnlock()
+	data := dashboardData{PhoneURL: a.currentPhoneURL(), AllowDelete: a.allowDelete, Devices: a.deviceViews()}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := dashboardTemplate.Execute(w, data); err != nil {
+	if err := futuristicDashboardTemplate.Execute(w, data); err != nil {
 		log.Printf("render dashboard: %v", err)
 	}
 }
@@ -204,21 +330,22 @@ func (a *app) pairDevice(w http.ResponseWriter, r *http.Request) {
 		a.pairingToken = ""
 		a.pairingExpiry = time.Time{}
 	}
-	session := a.sessionToken
 	a.mu.Unlock()
 	if !valid {
 		http.Error(w, "This pairing code is invalid or has expired. Create a new one on the computer.", http.StatusUnauthorized)
 		return
 	}
-	http.Redirect(w, r, "/device/"+session+"/", http.StatusSeeOther)
+	device, err := a.addDevice(r)
+	if err != nil {
+		http.Error(w, "Could not save paired device", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/device/"+device.Token+"/", http.StatusSeeOther)
 }
 
 func (a *app) requireDevice(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		a.mu.RLock()
-		session := a.sessionToken
-		a.mu.RUnlock()
-		if !secureEqual(r.PathValue("session"), session) {
+		if !a.authorizeDevice(r.PathValue("session")) {
 			http.Error(w, "Pair this device using the QR code on the computer.", http.StatusUnauthorized)
 			return
 		}
@@ -265,20 +392,26 @@ func (a *app) revokeDevices(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	token, err := newToken()
+	a.mu.Lock()
+	a.devices = make(map[string]pairedDevice)
+	err := a.saveDevicesLocked()
+	a.mu.Unlock()
 	if err != nil {
 		http.Error(w, "Could not revoke devices", http.StatusInternalServerError)
 		return
 	}
-	if a.sessionFile != "" {
-		if err := os.WriteFile(a.sessionFile, []byte(token), 0o600); err != nil {
-			http.Error(w, "Could not save revoked session", http.StatusInternalServerError)
-			return
-		}
-	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) revokeDevice(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	a.sessionToken = token
+	delete(a.devices, r.PathValue("id"))
+	err := a.saveDevicesLocked()
 	a.mu.Unlock()
+	if err != nil {
+		http.Error(w, "Could not revoke device", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -307,7 +440,7 @@ func (a *app) index(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data := struct{ AllowDelete bool }{a.allowDelete}
 	var page bytes.Buffer
-	if err := phoneTemplate.Execute(&page, data); err != nil {
+	if err := futuristicPhoneTemplate.Execute(&page, data); err != nil {
 		log.Printf("render phone page: %v", err)
 		return
 	}
@@ -462,24 +595,6 @@ func newToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(value), nil
-}
-
-func loadOrCreateSecret(path string) (string, error) {
-	value, err := os.ReadFile(path)
-	if err == nil {
-		return strings.TrimSpace(string(value)), nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	secret, err := newToken()
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, []byte(secret), 0o600); err != nil {
-		return "", err
-	}
-	return secret, nil
 }
 
 func ensureCertificate(configDir string) (string, string, error) {

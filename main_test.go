@@ -18,8 +18,10 @@ func testApp(t *testing.T) *app {
 		allowDelete:   false,
 		pairingToken:  "pair-secret",
 		pairingExpiry: time.Now().Add(time.Minute),
-		sessionToken:  "device-secret",
-		quit:          make(chan struct{}),
+		devices: map[string]pairedDevice{
+			"known-device": {ID: "known-device", Token: "device-secret", Name: "Android · Chrome", LastSeen: time.Now()},
+		},
+		quit: make(chan struct{}),
 	}
 }
 
@@ -55,8 +57,9 @@ func TestPairingIsOneTimeAndRedirectsToDeviceCapability(t *testing.T) {
 	if first.Code != http.StatusSeeOther {
 		t.Fatalf("first pairing status = %d, want %d", first.Code, http.StatusSeeOther)
 	}
-	if location := first.Header().Get("Location"); location != "/device/device-secret/" {
-		t.Fatalf("location = %q", location)
+	location := first.Header().Get("Location")
+	if !strings.HasPrefix(location, "/device/") || location == "/device/device-secret/" {
+		t.Fatalf("unexpected independent device location = %q", location)
 	}
 	if cookies := first.Result().Cookies(); len(cookies) != 0 {
 		t.Fatalf("pairing unexpectedly set cookies: %+v", cookies)
@@ -80,7 +83,7 @@ func TestTLSClientFollowsPairingRedirectWithCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK || response.Request.URL.Path != "/device/device-secret/" {
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Request.URL.Path, "/device/") {
 		t.Fatalf("status = %d, path = %q", response.StatusCode, response.Request.URL.Path)
 	}
 }
@@ -108,6 +111,9 @@ func TestPhonePageUsesCapabilityScopedAPIs(t *testing.T) {
 	body := recorder.Body.String()
 	if !strings.Contains(body, "/device/device-secret/api/files") || strings.Contains(body, "/app/api/files") {
 		t.Fatalf("phone page did not contain capability-scoped API path")
+	}
+	if strings.Contains(body, "#send{") || !strings.Contains(body, "#send-button{") {
+		t.Fatalf("phone page has conflicting Send panel styles")
 	}
 }
 
@@ -141,6 +147,41 @@ func TestRevokeInvalidatesExistingDevice(t *testing.T) {
 	application.routes().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("old session status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestDashboardListsPairedDevices(t *testing.T) {
+	application := testApp(t)
+	application.devices["second"] = pairedDevice{ID: "second", Token: "second-secret", Name: "Android", Address: "192.168.1.21", LastSeen: time.Now()}
+	recorder := httptest.NewRecorder()
+	application.routes().ServeHTTP(recorder, request(http.MethodGet, "https://localhost/", "127.0.0.1:1234"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "Android · Chrome") || !strings.Contains(body, "Android") || !strings.Contains(body, "192.168.1.21") {
+		t.Fatalf("dashboard did not list paired devices")
+	}
+}
+
+func TestRevokeOneDeviceLeavesOtherAuthorized(t *testing.T) {
+	application := testApp(t)
+	application.devices["second"] = pairedDevice{ID: "second", Token: "second-secret", Name: "Android", LastSeen: time.Now()}
+	revoke := httptest.NewRecorder()
+	application.routes().ServeHTTP(revoke, request(http.MethodDelete, "https://localhost/devices/known-device", "127.0.0.1:1234"))
+	if revoke.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d", revoke.Code)
+	}
+
+	removed := httptest.NewRecorder()
+	application.routes().ServeHTTP(removed, request(http.MethodGet, "https://up/device/device-secret/api/files", "192.168.1.20:1234"))
+	if removed.Code != http.StatusUnauthorized {
+		t.Fatalf("removed device status = %d", removed.Code)
+	}
+	remaining := httptest.NewRecorder()
+	application.routes().ServeHTTP(remaining, request(http.MethodGet, "https://up/device/second-secret/api/files", "192.168.1.21:1234"))
+	if remaining.Code != http.StatusOK {
+		t.Fatalf("remaining device status = %d", remaining.Code)
 	}
 }
 

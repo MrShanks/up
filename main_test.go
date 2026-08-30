@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/tls"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -55,7 +57,7 @@ func TestPairingIsOneTimeAndSetsSecureCookie(t *testing.T) {
 		t.Fatalf("first pairing status = %d, want %d", first.Code, http.StatusSeeOther)
 	}
 	cookie := first.Result().Cookies()[0]
-	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie security flags missing: %+v", cookie)
 	}
 
@@ -63,6 +65,27 @@ func TestPairingIsOneTimeAndSetsSecureCookie(t *testing.T) {
 	application.routes().ServeHTTP(second, request(http.MethodGet, "https://up/pair/pair-secret", "192.168.1.20:1234"))
 	if second.Code != http.StatusUnauthorized {
 		t.Fatalf("reused pairing status = %d, want %d", second.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestTLSClientFollowsPairingRedirectWithCookie(t *testing.T) {
+	application := testApp(t)
+	server := httptest.NewTLSServer(application.routes())
+	defer server.Close()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Jar = jar
+	client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // Test server certificate.
+	response, err := client.Get(server.URL + "/pair/pair-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Request.URL.Path != "/app/" {
+		t.Fatalf("status = %d, path = %q", response.StatusCode, response.Request.URL.Path)
 	}
 }
 

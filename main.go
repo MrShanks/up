@@ -210,7 +210,7 @@ func (a *app) pairDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "This pairing code is invalid or has expired. Create a new one on the computer.", http.StatusUnauthorized)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: session, Path: "/app/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 365 * 24 * 60 * 60})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: session, Path: "/app/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 365 * 24 * 60 * 60})
 	http.Redirect(w, r, "/app/", http.StatusSeeOther)
 }
 

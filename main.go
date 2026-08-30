@@ -68,10 +68,10 @@ type pairedDevice struct {
 }
 
 type deviceView struct {
-	ID       string
-	Name     string
-	Address  string
-	LastSeen string
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Address  string `json:"address"`
+	LastSeen string `json:"lastSeen"`
 }
 
 type dashboardData struct {
@@ -273,6 +273,7 @@ func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", a.dashboard)
 	mux.HandleFunc("GET /qr.png", a.qrImage)
+	mux.HandleFunc("GET /api/devices", a.localControl(a.listDevices))
 	mux.HandleFunc("POST /open-folder", a.localControl(a.openFolder))
 	mux.HandleFunc("POST /rotate", a.localControl(a.rotatePairing))
 	mux.HandleFunc("POST /revoke", a.localControl(a.revokeDevices))
@@ -321,6 +322,11 @@ func (a *app) qrImage(w http.ResponseWriter, r *http.Request) {
 	a.mu.RUnlock()
 	w.Header().Set("Content-Type", "image/png")
 	_, _ = w.Write(image)
+}
+
+func (a *app) listDevices(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.deviceViews())
 }
 
 func (a *app) pairDevice(w http.ResponseWriter, r *http.Request) {

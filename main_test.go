@@ -164,6 +164,25 @@ func TestDashboardListsPairedDevices(t *testing.T) {
 	}
 }
 
+func TestDevicesAPIListsPairedDevices(t *testing.T) {
+	application := testApp(t)
+	recorder := httptest.NewRecorder()
+	application.routes().ServeHTTP(recorder, request(http.MethodGet, "https://localhost/api/devices", "127.0.0.1:1234"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"id":"known-device"`) || !strings.Contains(body, `"name":"Android · Chrome"`) {
+		t.Fatalf("devices response = %q", body)
+	}
+
+	remote := httptest.NewRecorder()
+	application.routes().ServeHTTP(remote, request(http.MethodGet, "https://up/api/devices", "192.168.1.20:1234"))
+	if remote.Code != http.StatusForbidden {
+		t.Fatalf("remote status = %d, want %d", remote.Code, http.StatusForbidden)
+	}
+}
+
 func TestRevokeOneDeviceLeavesOtherAuthorized(t *testing.T) {
 	application := testApp(t)
 	application.devices["second"] = pairedDevice{ID: "second", Token: "second-secret", Name: "Android", LastSeen: time.Now()}

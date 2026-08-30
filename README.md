@@ -10,7 +10,9 @@ Install Go 1.24 or newer, then run:
 go run .
 ```
 
-The app opens a local dashboard with a QR code. Scan it with an Android phone connected to the same Wi-Fi network. If the browser does not open automatically, use the dashboard URL printed in the terminal. Files are shared through `~/Downloads/Up` by default.
+The app opens a local dashboard with a one-time QR pairing code. Scan it with an Android phone connected to the same trusted Wi-Fi network. The code expires after 10 minutes and cannot be reused. Files are shared through `~/Downloads/Up` by default.
+
+Up creates a private HTTPS certificate on first launch. Your browser will warn that it is not issued by a public certificate authority; verify that the address is your computer's private LAN address before accepting it. The paired phone then receives a secure, HttpOnly device session that remains valid across app restarts.
 
 ## Send from computer to phone
 
@@ -26,7 +28,9 @@ Use another folder or port when needed:
 go run . -dir "/path/to/folder" -port 8080
 ```
 
-The browser interface can upload files to the computer, download shared files, and delete files. Duplicate uploads are renamed instead of overwritten. Each launch creates a new private URL, and uploads are limited to 10 GB per request.
+The browser interface can upload files to the computer and download shared files. Duplicate uploads are renamed instead of overwritten, and uploads are limited to 10 GB per request. Phone-side deletion is disabled by default; enable it explicitly with `-allow-delete`.
+
+Use **New pairing code** to pair another phone. Use **Forget paired phones** to invalidate every existing phone session immediately.
 
 ## Build
 
@@ -52,4 +56,12 @@ To rebuild the app and disk image:
 
 The local package is ad-hoc signed. If macOS blocks the first launch, Control-click **Up** in Applications, choose **Open**, then confirm. Public distribution without this prompt requires an Apple Developer ID certificate and notarization.
 
-Traffic is not encrypted. Use a trusted network and stop the command-line app with `Ctrl+C`, or use **Quit Up** on the dashboard.
+## Security
+
+- Transfers use HTTPS with a locally generated certificate and private key stored in the user's configuration folder.
+- File routes require a paired-device cookie; QR pairing codes expire after 10 minutes and work once.
+- Connections from public IP addresses are rejected. Do not configure router port forwarding for Up.
+- Shared-folder symbolic links are ignored, uploaded files are private to the local user, and phone deletion is off by default.
+- The dashboard is loopback-only and can revoke paired devices.
+
+Keep using a trusted local network: encryption protects transfer contents, but accepting a private certificate without verifying its LAN address could still trust the wrong server. Stop the command-line app with `Ctrl+C`, or use **Quit Up** on the dashboard.

@@ -30,7 +30,7 @@ go run . -dir "/path/to/folder" -port 8080
 
 The browser interface can upload files to the computer and download shared files. Duplicate uploads are renamed instead of overwritten, and uploads are limited to 10 GB per request. Phone-side deletion is disabled by default; enable it explicitly with `-allow-delete`.
 
-The dashboard lists every paired device with its address and last activity. Remove one device with its **×** button, use **New code** to pair another phone, or use **Remove all** to invalidate every device.
+The dashboard lists currently connected devices. A device disappears shortly after its page closes and reappears when reopened. Its pairing remains valid until you remove it with **×** or use **Remove all**.
 
 ## Build
 

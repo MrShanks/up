@@ -183,6 +183,28 @@ func TestDevicesAPIListsPairedDevices(t *testing.T) {
 	}
 }
 
+func TestDevicesAPIHidesDisconnectedDevices(t *testing.T) {
+	application := testApp(t)
+	device := application.devices["known-device"]
+	device.LastSeen = time.Now().Add(-deviceOnlineWindow - time.Second)
+	application.devices["known-device"] = device
+
+	recorder := httptest.NewRecorder()
+	application.routes().ServeHTTP(recorder, request(http.MethodGet, "https://localhost/api/devices", "127.0.0.1:1234"))
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "known-device") {
+		t.Fatalf("disconnected device response = %q", recorder.Body.String())
+	}
+
+	reconnect := httptest.NewRecorder()
+	application.routes().ServeHTTP(reconnect, request(http.MethodGet, "https://up/device/device-secret/api/files", "192.168.1.20:1234"))
+	if reconnect.Code != http.StatusOK {
+		t.Fatalf("reconnect status = %d", reconnect.Code)
+	}
+	if len(application.deviceViews()) != 1 {
+		t.Fatal("authorized device did not become connected again")
+	}
+}
+
 func TestRevokeOneDeviceLeavesOtherAuthorized(t *testing.T) {
 	application := testApp(t)
 	application.devices["second"] = pairedDevice{ID: "second", Token: "second-secret", Name: "Android", LastSeen: time.Now()}

@@ -34,8 +34,9 @@ import (
 )
 
 const (
-	maxUploadSize   int64 = 10 << 30
-	pairingLifetime       = 10 * time.Minute
+	maxUploadSize      int64 = 10 << 30
+	pairingLifetime          = 10 * time.Minute
+	deviceOnlineWindow       = 10 * time.Second
 )
 
 type app struct {
@@ -121,6 +122,9 @@ func (a *app) deviceViews() []deviceView {
 	defer a.mu.RUnlock()
 	views := make([]deviceView, 0, len(a.devices))
 	for _, device := range a.devices {
+		if time.Since(device.LastSeen) > deviceOnlineWindow {
+			continue
+		}
 		views = append(views, deviceView{ID: device.ID, Name: device.Name, Address: device.Address, LastSeen: relativeTime(device.LastSeen)})
 	}
 	sort.Slice(views, func(i, j int) bool { return a.devices[views[i].ID].LastSeen.After(a.devices[views[j].ID].LastSeen) })

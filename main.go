@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/subtle"
@@ -35,7 +36,6 @@ import (
 const (
 	maxUploadSize   int64 = 10 << 30
 	pairingLifetime       = 10 * time.Minute
-	sessionCookie         = "up_device"
 )
 
 type app struct {
@@ -151,11 +151,11 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /revoke", a.localControl(a.revokeDevices))
 	mux.HandleFunc("POST /quit", a.localControl(a.quitApp))
 	mux.HandleFunc("GET /pair/{token}", a.pairDevice)
-	mux.HandleFunc("GET /app/{$}", a.requireDevice(a.index))
-	mux.HandleFunc("GET /app/api/files", a.requireDevice(a.listFiles))
-	mux.HandleFunc("POST /app/api/upload", a.requireDevice(a.uploadFiles))
-	mux.HandleFunc("GET /app/files/{name}", a.requireDevice(a.downloadFile))
-	mux.HandleFunc("DELETE /app/files/{name}", a.requireDevice(a.deleteFile))
+	mux.HandleFunc("GET /device/{session}/{$}", a.requireDevice(a.index))
+	mux.HandleFunc("GET /device/{session}/api/files", a.requireDevice(a.listFiles))
+	mux.HandleFunc("POST /device/{session}/api/upload", a.requireDevice(a.uploadFiles))
+	mux.HandleFunc("GET /device/{session}/files/{name}", a.requireDevice(a.downloadFile))
+	mux.HandleFunc("DELETE /device/{session}/files/{name}", a.requireDevice(a.deleteFile))
 	return securityHeaders(privateNetworkOnly(mux))
 }
 
@@ -210,17 +210,15 @@ func (a *app) pairDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "This pairing code is invalid or has expired. Create a new one on the computer.", http.StatusUnauthorized)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: session, Path: "/app/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 365 * 24 * 60 * 60})
-	http.Redirect(w, r, "/app/", http.StatusSeeOther)
+	http.Redirect(w, r, "/device/"+session+"/", http.StatusSeeOther)
 }
 
 func (a *app) requireDevice(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(sessionCookie)
 		a.mu.RLock()
 		session := a.sessionToken
 		a.mu.RUnlock()
-		if err != nil || !secureEqual(cookie.Value, session) {
+		if !secureEqual(r.PathValue("session"), session) {
 			http.Error(w, "Pair this device using the QR code on the computer.", http.StatusUnauthorized)
 			return
 		}
@@ -305,12 +303,16 @@ func (a *app) quitApp(w http.ResponseWriter, r *http.Request) {
 	a.quitOnce.Do(func() { close(a.quit) })
 }
 
-func (a *app) index(w http.ResponseWriter, _ *http.Request) {
+func (a *app) index(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data := struct{ AllowDelete bool }{a.allowDelete}
-	if err := phoneTemplate.Execute(w, data); err != nil {
+	var page bytes.Buffer
+	if err := phoneTemplate.Execute(&page, data); err != nil {
 		log.Printf("render phone page: %v", err)
+		return
 	}
+	base := "/device/" + r.PathValue("session") + "/"
+	_, _ = io.WriteString(w, strings.ReplaceAll(page.String(), "/app/", base))
 }
 
 func (a *app) listFiles(w http.ResponseWriter, _ *http.Request) {

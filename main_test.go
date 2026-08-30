@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/tls"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -43,22 +42,24 @@ func TestPrivateNetworkOnlyRejectsPublicAddress(t *testing.T) {
 func TestFileRoutesRequirePairedDevice(t *testing.T) {
 	application := testApp(t)
 	recorder := httptest.NewRecorder()
-	application.routes().ServeHTTP(recorder, request(http.MethodGet, "https://up/app/api/files", "192.168.1.20:1234"))
+	application.routes().ServeHTTP(recorder, request(http.MethodGet, "https://up/device/wrong/api/files", "192.168.1.20:1234"))
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
-func TestPairingIsOneTimeAndSetsSecureCookie(t *testing.T) {
+func TestPairingIsOneTimeAndRedirectsToDeviceCapability(t *testing.T) {
 	application := testApp(t)
 	first := httptest.NewRecorder()
 	application.routes().ServeHTTP(first, request(http.MethodGet, "https://up/pair/pair-secret", "192.168.1.20:1234"))
 	if first.Code != http.StatusSeeOther {
 		t.Fatalf("first pairing status = %d, want %d", first.Code, http.StatusSeeOther)
 	}
-	cookie := first.Result().Cookies()[0]
-	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("cookie security flags missing: %+v", cookie)
+	if location := first.Header().Get("Location"); location != "/device/device-secret/" {
+		t.Fatalf("location = %q", location)
+	}
+	if cookies := first.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("pairing unexpectedly set cookies: %+v", cookies)
 	}
 
 	second := httptest.NewRecorder()
@@ -68,23 +69,18 @@ func TestPairingIsOneTimeAndSetsSecureCookie(t *testing.T) {
 	}
 }
 
-func TestTLSClientFollowsPairingRedirectWithCookie(t *testing.T) {
+func TestTLSClientFollowsPairingRedirectWithCapability(t *testing.T) {
 	application := testApp(t)
 	server := httptest.NewTLSServer(application.routes())
 	defer server.Close()
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	client := server.Client()
-	client.Jar = jar
 	client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // Test server certificate.
 	response, err := client.Get(server.URL + "/pair/pair-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK || response.Request.URL.Path != "/app/" {
+	if response.StatusCode != http.StatusOK || response.Request.URL.Path != "/device/device-secret/" {
 		t.Fatalf("status = %d, path = %q", response.StatusCode, response.Request.URL.Path)
 	}
 }
@@ -94,12 +90,24 @@ func TestPairedDeviceCanListFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(application.dir, "hello.txt"), []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	req := request(http.MethodGet, "https://up/app/api/files", "192.168.1.20:1234")
-	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: application.sessionToken})
+	req := request(http.MethodGet, "https://up/device/device-secret/api/files", "192.168.1.20:1234")
 	recorder := httptest.NewRecorder()
 	application.routes().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "hello.txt") {
 		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPhonePageUsesCapabilityScopedAPIs(t *testing.T) {
+	application := testApp(t)
+	recorder := httptest.NewRecorder()
+	application.routes().ServeHTTP(recorder, request(http.MethodGet, "https://up/device/device-secret/", "192.168.1.20:1234"))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "/device/device-secret/api/files") || strings.Contains(body, "/app/api/files") {
+		t.Fatalf("phone page did not contain capability-scoped API path")
 	}
 }
 
@@ -109,8 +117,7 @@ func TestDeleteDisabledByDefault(t *testing.T) {
 	if err := os.WriteFile(file, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	req := request(http.MethodDelete, "https://up/app/files/keep.txt", "192.168.1.20:1234")
-	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: application.sessionToken})
+	req := request(http.MethodDelete, "https://up/device/device-secret/files/keep.txt", "192.168.1.20:1234")
 	recorder := httptest.NewRecorder()
 	application.routes().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusForbidden {
@@ -129,8 +136,7 @@ func TestRevokeInvalidatesExistingDevice(t *testing.T) {
 		t.Fatalf("revoke status = %d", revoke.Code)
 	}
 
-	req := request(http.MethodGet, "https://up/app/api/files", "192.168.1.20:1234")
-	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "device-secret"})
+	req := request(http.MethodGet, "https://up/device/device-secret/api/files", "192.168.1.20:1234")
 	recorder := httptest.NewRecorder()
 	application.routes().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusUnauthorized {
@@ -158,8 +164,7 @@ func TestDownloadRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(application.dir, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
-	req := request(http.MethodGet, "https://up/app/files/link.txt", "192.168.1.20:1234")
-	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: application.sessionToken})
+	req := request(http.MethodGet, "https://up/device/device-secret/files/link.txt", "192.168.1.20:1234")
 	recorder := httptest.NewRecorder()
 	application.routes().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusNotFound {

@@ -237,7 +237,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	dashboardListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = listener.Close()
+		log.Fatal(err)
+	}
 	actualPort := listener.Addr().(*net.TCPAddr).Port
+	dashboardPort := dashboardListener.Addr().(*net.TCPAddr).Port
 	application := &app{
 		dir:           absDir,
 		allowDelete:   *allowDelete,
@@ -254,19 +260,29 @@ func main() {
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
 	}
-	dashboardURL := fmt.Sprintf("https://localhost:%d/", actualPort)
+	dashboardServer := &http.Server{
+		Handler:           application.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+	}
+	dashboardURL := fmt.Sprintf("http://localhost:%d/", dashboardPort)
 	log.Printf("Sharing %s", absDir)
-	log.Printf("Pair a phone at %s", dashboardURL)
-	log.Print("HTTPS uses a private local certificate; accept the warning only for this Up address.")
+	log.Printf("Dashboard: %s", dashboardURL)
+	log.Print("Phone transfers use HTTPS with a private local certificate; accept the warning only for the QR address.")
 	if err := openBrowser(dashboardURL); err != nil {
 		log.Printf("Could not open browser: %v", err)
 	}
-	serveErrors := make(chan error, 1)
+	serveErrors := make(chan error, 2)
 	go func() { serveErrors <- server.ServeTLS(listener, certFile, keyFile) }()
+	go func() { serveErrors <- dashboardServer.Serve(dashboardListener) }()
 	select {
 	case <-application.quit:
 		_ = server.Close()
+		_ = dashboardServer.Close()
 	case err := <-serveErrors:
+		_ = server.Close()
+		_ = dashboardServer.Close()
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}
@@ -383,17 +399,17 @@ func (a *app) rotatePairing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not create pairing code", http.StatusInternalServerError)
 		return
 	}
-	host := localIP()
-	_, port, err := net.SplitHostPort(r.Host)
+	pairingURL, err := url.Parse(a.currentPhoneURL())
 	if err != nil {
-		http.Error(w, "Could not determine server port", http.StatusInternalServerError)
+		http.Error(w, "Could not determine phone address", http.StatusInternalServerError)
 		return
 	}
 	a.mu.Lock()
 	a.pairingToken = token
 	a.pairingExpiry = time.Now().Add(pairingLifetime)
 	a.mu.Unlock()
-	a.setPhoneURL(fmt.Sprintf("https://%s:%s/pair/%s", host, port, token))
+	pairingURL.Path = "/pair/" + token
+	a.setPhoneURL(pairingURL.String())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -709,7 +725,7 @@ func sameOrigin(r *http.Request) bool {
 		return true
 	}
 	parsed, err := url.Parse(origin)
-	return err == nil && parsed.Scheme == "https" && parsed.Host == r.Host
+	return err == nil && parsed.Scheme == r.URL.Scheme && parsed.Host == r.Host
 }
 
 func privateNetworkOnly(next http.Handler) http.Handler {

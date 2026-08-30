@@ -237,6 +237,32 @@ func TestLocalControlRejectsCrossOriginRequest(t *testing.T) {
 	}
 }
 
+func TestLocalControlAllowsMatchingHTTPOrigin(t *testing.T) {
+	application := testApp(t)
+	req := request(http.MethodGet, "http://localhost:54321/api/devices", "127.0.0.1:1234")
+	req.Header.Set("Origin", "http://localhost:54321")
+	recorder := httptest.NewRecorder()
+	application.routes().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+}
+
+func TestRotatePairingKeepsHTTPSPhoneAddress(t *testing.T) {
+	application := testApp(t)
+	application.setPhoneURL("https://192.168.1.10:18443/pair/old-token")
+	req := request(http.MethodPost, "http://localhost:54321/rotate", "127.0.0.1:1234")
+	req.Header.Set("Origin", "http://localhost:54321")
+	recorder := httptest.NewRecorder()
+	application.routes().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+	if phoneURL := application.currentPhoneURL(); !strings.HasPrefix(phoneURL, "https://192.168.1.10:18443/pair/") || strings.HasSuffix(phoneURL, "/old-token") {
+		t.Fatalf("phone URL = %q", phoneURL)
+	}
+}
+
 func TestDownloadRejectsSymlink(t *testing.T) {
 	application := testApp(t)
 	outside := filepath.Join(t.TempDir(), "private.txt")
